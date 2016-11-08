@@ -65,14 +65,14 @@ bridge.")
     (let* ((name (string-upcase (string (desig-prop-value object :name))))
            (shape-prop (or (desig-prop-value object :shape) :box))
            (shape (primitive-code shape-prop))
+	   (dim-prop (desig-prop-value object :dimensions))
            (dimensions (or
-                        (let ((obj-dim (desig-prop-value
-                                        object :dimensions)))
-                          (when obj-dim
-                            (cond ((eql shape-prop :cylinder)
-                                   (vector (tf:z obj-dim)
-                                           (tf:x obj-dim)))
-                                  (t (3dvector->vector obj-dim)))))
+			(when dim-prop
+			  (cond ((string= (symbol-name (class-name dim-prop)) "3D-VECTOR")
+				 (cond ((eql shape-prop :cylinder)
+					(vector (tf:z dim-prop) (tf:x dim-prop)))
+				       (t (3dvector->vector dim-prop))))
+				((vectorp dim-prop) dim-prop)))
                         (case shape-prop
                           (:box (vector 0.1 0.1 0.1))
                           (:sphere (vector 0.1 0.1))
