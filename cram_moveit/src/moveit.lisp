@@ -29,6 +29,7 @@
 
 (defvar *moveit-pose-validity-check-lock* nil)
 (defparameter *object-reference-frame* "map")
+(defparameter *needs-ft-fix* nil)
 
 (defun init-moveit-bridge ()
   "Sets up the basic action client communication handles for the
@@ -192,9 +193,25 @@ MoveIt! framework and registers known conditions."
   which case a failure condition is signalled, based on the error code
   returned by the MoveIt! service (as defined in
   moveit_msgs/MoveItErrorCodes)."
-  ;; NOTE(winkler): Since MoveIt! crashes once it receives a frame-id
-  ;; which includes the "/" character at the beginning, we change the
-  ;; frame-id here just in case.
+  ;; NOTE(winkler): This is a PR2 specific fix for when the force
+  ;; torque sensor is included in the URDF.
+  (when *needs-ft-fix*
+    (setf additional-touch-link-groups
+          (append nil;additional-touch-link-groups
+                  `(("l_gripper_palm_link")
+                    ("l_force_torque_link"))))
+    (setf additional-collision-objects-groups
+          (append nil;additional-collision-objects-groups
+                  `(("l_force_torque_link")
+                    ("l_forearm_link"
+                     "l_wrist_roll_link"
+                     "l_gripper_motor_accelerometer_link"))))
+    (setf additional-values
+          (append nil;additional-values
+                  `((t) (t)))))
+  (format t "~a~%" additional-touch-link-groups)
+  (format t "~a~%" additional-collision-objects-groups)
+  (format t "~a~%" additional-values)
   (cond ((and joint-names joint-positions)
          (ros-info (moveit) "Move joints"))
         (t (ros-info (moveit)
@@ -872,11 +889,7 @@ Cannot match path constraints to poses.")
 
 (defun make-pose-goal-constraints (link-names poses-stamped names positions
                                    &key (tolerance-radius 0.01) raise-elbow)
-  (map 'vector
-       (lambda (link-name pose-stamped)
-         (make-message
-          "moveit_msgs/Constraints"
-          :joint_constraints
+  (let ((joint_constraints
           (map 'vector #'identity
                (append
                 (mapcar
@@ -889,7 +902,7 @@ Cannot match path constraints to poses.")
                     :tolerance_below 0.01
                     :weight 1.0))
                  names positions)
-                (when raise-elbow
+                (when (or (eql raise-elbow :left) (eql raise-elbow :right))
                   (list
                    (case raise-elbow
                      (:left
@@ -907,52 +920,57 @@ Cannot match path constraints to poses.")
                        :position -0.25
                        :tolerance_above 0.25
                        :tolerance_below 0.25
-                       :weight 1.0)))))))
-          :position_constraints
-          (map 'vector #'identity
-               (append
-                (list
-                 (make-message
-                  "moveit_msgs/PositionConstraint"
-                  :weight 1.0
-                  :link_name link-name
-                  :header (make-message
-                           "std_msgs/Header"
-                           :frame_id (frame-id pose-stamped)
-                           :stamp (stamp pose-stamped))
-                  :constraint_region
-                  (make-message
-                   "moveit_msgs/BoundingVolume"
-                   :primitives (vector
-                                (make-message
-                                 "shape_msgs/SolidPrimitive"
-                                 :type (roslisp-msg-protocol:symbol-code
-                                        'shape_msgs-msg:solidprimitive :sphere)
-                                 :dimensions (vector tolerance-radius)))
-                   :primitive_poses
-                   (vector (to-msg (cl-transforms-stamped:pose-stamped->pose pose-stamped))))))))
-          :orientation_constraints
-          (vector
+                       :weight 1.0)))))))))
+    (map 'vector
+         (lambda (link-name pose-stamped)
            (make-message
-            "moveit_msgs/OrientationConstraint"
-            :weight 1.0
-            :link_name link-name
-            :header (make-message
-                     "std_msgs/Header"
-                     :frame_id (frame-id pose-stamped)
-                     :stamp (stamp pose-stamped))
-            :orientation
-            (make-message
-             "geometry_msgs/Quaternion"
-             :x (cl-transforms:x (cl-transforms:orientation pose-stamped))
-             :y (cl-transforms:y (cl-transforms:orientation pose-stamped))
-             :z (cl-transforms:z (cl-transforms:orientation pose-stamped))
-             :w (cl-transforms:w (cl-transforms:orientation pose-stamped)))
-            :absolute_x_axis_tolerance tolerance-radius
-            :absolute_y_axis_tolerance tolerance-radius
-            :absolute_z_axis_tolerance tolerance-radius))))
-       link-names poses-stamped))
-
+            "moveit_msgs/Constraints"
+            :joint_constraints joint_constraints
+            :position_constraints
+            (map 'vector #'identity
+                 (append
+                  (list
+                   (make-message
+                    "moveit_msgs/PositionConstraint"
+                    :weight 1.0
+                    :link_name link-name
+                    :header (make-message
+                             "std_msgs/Header"
+                             :frame_id (frame-id pose-stamped)
+                             :stamp (stamp pose-stamped))
+                    :constraint_region
+                    (make-message
+                     "moveit_msgs/BoundingVolume"
+                     :primitives (vector
+                                  (make-message
+                                   "shape_msgs/SolidPrimitive"
+                                   :type (roslisp-msg-protocol:symbol-code
+                                          'shape_msgs-msg:solidprimitive :sphere)
+                                   :dimensions (vector tolerance-radius)))
+                     :primitive_poses
+                     (vector (to-msg (cl-transforms-stamped:pose-stamped->pose pose-stamped))))))))
+            :orientation_constraints
+            (vector
+             (make-message
+              "moveit_msgs/OrientationConstraint"
+              :weight 1.0
+              :link_name link-name
+              :header (make-message
+                       "std_msgs/Header"
+                       :frame_id (frame-id pose-stamped)
+                       :stamp (stamp pose-stamped))
+              :orientation
+              (make-message
+               "geometry_msgs/Quaternion"
+               :x (cl-transforms:x (cl-transforms:orientation pose-stamped))
+               :y (cl-transforms:y (cl-transforms:orientation pose-stamped))
+               :z (cl-transforms:z (cl-transforms:orientation pose-stamped))
+               :w (cl-transforms:w (cl-transforms:orientation pose-stamped)))
+              :absolute_x_axis_tolerance tolerance-radius
+              :absolute_y_axis_tolerance tolerance-radius
+              :absolute_z_axis_tolerance tolerance-radius))))
+         link-names poses-stamped)))
+ 
 (defun make-trajectory-constraints (&key link-names reference-frames max-tilts
                                       reference-orientations)
   (make-message
